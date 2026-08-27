@@ -1,0 +1,1226 @@
+{
+  "name": "creator-forge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "next-auth": "4.24.7",
+    "@next-auth/prisma-adapter": "1.0.7",
+    "@prisma/client": "5.19.1",
+    "bcryptjs": "2.4.3",
+    "zod": "3.23.8",
+    "axios": "1.7.7"
+  },
+  "devDependencies": {
+    "prisma": "5.19.1",
+    "typescript": "5.5.4",
+    "@types/node": "20.14.15",
+    "@types/react": "18.3.3",
+    "@types/bcryptjs": "2.4.6",
+    "tailwindcss": "3.4.10",
+    "postcss": "8.4.41",
+    "autoprefixer": "10.4.20"
+  }
+}
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "**.fal.media" },
+      { protocol: "https", hostname: "fal.media" },
+    ],
+  },
+};
+module.exports = nextConfig;
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ["./app/**/*.{js,ts,jsx,tsx}", "./components/**/*.{js,ts,jsx,tsx}"],
+  theme: {
+    extend: {
+      colors: {
+        studio: {
+          bg: "#161513",
+          panel: "#1F1D1A",
+          line: "#33302A",
+          paper: "#EFE9DD",
+        },
+        tally: {
+          DEFAULT: "#E8442C",
+          dim: "#7A2A1F",
+        },
+      },
+      fontFamily: {
+        display: ["'Fraunces'", "serif"],
+        mono: ["'IBM Plex Mono'", "monospace"],
+        body: ["'Inter'", "sans-serif"],
+      },
+    },
+  },
+  plugins: [],
+module.exports = {
+  plugins: { tailwindcss: {}, autoprefixer: {} },
+};
+DATABASE_URL="postgresql://user:password@host:5432/dbname"
+NEXTAUTH_SECRET="générez une valeur aléatoire : openssl rand -base64 32"
+NEXTAUTH_URL="http://localhost:3000"
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+
+NEXT_PUBLIC_FEDAPAY_PUBLIC_KEY="pk_live_..."
+FEDAPAY_SECRET_KEY="sk_live_..."
+FEDAPAY_ENV="live"
+FEDAPAY_WEBHOOK_SECRET="whsec_..."
+
+FAL_API_KEY="votre_clé_fal_ai"
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String?
+  name          String?
+  credits       Int      @default(10)
+  createdAt     DateTime @default(now())
+
+  generations   Generation[]
+  transactions  CreditTransaction[]
+}
+
+model Generation {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  type        String
+  platform    String?
+  prompt      String
+  modelUsed   String
+  creditsCost Int
+  status      String   @default("pending")
+  resultUrl   String?
+  errorMessage String?
+
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+}
+
+model CreditTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  amount      Int
+  reason      String
+  reference   String?
+  createdAt   DateTime @default(now())
+}
+
+model Payment {
+  id                String   @id @default(cuid())
+  userId            String
+  fedapayTransactionId String @unique
+  amountXof         Int
+  creditsGranted    Int
+  status            String   @default("pending")
+  createdAt         DateTime @default(now())
+}
+};
+import { PrismaClient } from "@prisma/client";
+
+const globalForPrisma = global as unknown as { prisma: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ||
+  new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
+  });
+
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+import { prisma } from "./prisma";
+
+export const CREDIT_COSTS = {
+  image: {
+    "flux-pro": 4,
+    "ideogram-v3": 5,
+  },
+  video: {
+    "kling-2.1": 25,
+    "runway-gen4": 35,
+  },
+  music: {
+    "elevenlabs-music": 10,
+  },
+} as const;
+
+export type GenerationType = keyof typeof CREDIT_COSTS;
+
+export const CREDIT_PACKS = [
+  { id: "pack_s", credits: 50, priceXof: 4000, label: "Starter" },
+  { id: "pack_m", credits: 150, priceXof: 10000, label: "Creator" },
+  { id: "pack_l", credits: 400, priceXof: 25000, label: "Studio" },
+] as const;
+
+export class InsufficientCreditsError extends Error {
+  constructor() {
+    super("Crédits insuffisants");
+    this.name = "InsufficientCreditsError";
+  }
+}
+
+export async function debitCreditsForGeneration(params: {
+  userId: string;
+  type: GenerationType;
+  modelUsed: string;
+  prompt: string;
+  platform?: string;
+  cost: number;
+}) {
+  const { userId, type, modelUsed, prompt, platform, cost } = params;
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+    if (user.credits < cost) throw new InsufficientCreditsError();
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { credits: { decrement: cost } },
+    });
+
+    const generation = await tx.generation.create({
+      data: {
+        userId,
+        type,
+        platform,
+        prompt,
+        modelUsed,
+        creditsCost: cost,
+        status: "pending",
+      },
+    });
+
+    await tx.creditTransaction.create({
+      data: {
+        userId,
+        amount: -cost,
+        reason: "generation",
+        reference: generation.id,
+      },
+    });
+
+    return generation;
+  });
+}
+
+export async function refundCreditsForFailedGeneration(generationId: string) {
+  return prisma.$transaction(async (tx) => {
+    const gen = await tx.generation.update({
+      where: { id: generationId },
+      data: { status: "failed" },
+    });
+
+    await tx.user.update({
+      where: { id: gen.userId },
+      data: { credits: { increment: gen.creditsCost } },
+    });
+
+    await tx.creditTransaction.create({
+      data: {
+        userId: gen.userId,
+        amount: gen.creditsCost,
+        reason: "refund",
+        reference: gen.id,
+      },
+    });
+  });
+}
+
+export async function creditAfterPayment(params: {
+  userId: string;
+  credits: number;
+  fedapayTransactionId: string;
+}) {
+  const { userId, credits, fedapayTransactionId } = params;
+  return prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: { credits: { increment: credits } },
+    });
+    await tx.creditTransaction.create({
+      data: {
+        userId,
+        amount: credits,
+        reason: "purchase",
+        reference: fedapayTransactionId,
+      },
+    });
+  });
+import axios from "axios";
+
+const FAL_KEY = process.env.FAL_API_KEY;
+const FAL_BASE_URL = "https://fal.run";
+
+export const PLATFORM_PRESETS = {
+  tiktok: { width: 1080, height: 1920, aspect: "9:16" },
+  instagram: { width: 1080, height: 1920, aspect: "9:16" },
+  youtube: { width: 1920, height: 1080, aspect: "16:9" },
+  pinterest: { width: 1000, height: 1500, aspect: "2:3" },
+} as const;
+
+type PlatformKey = keyof typeof PLATFORM_PRESETS;
+
+async function falRequest(modelPath: string, input: Record<string, unknown>) {
+  if (!FAL_KEY) throw new Error("FAL_API_KEY manquante côté serveur");
+
+  const { data } = await axios.post(`${FAL_BASE_URL}/${modelPath}`, input, {
+    headers: {
+      Authorization: `Key ${FAL_KEY}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 120_000,
+  });
+  return data;
+}
+
+export async function generateImage(prompt: string, platform?: PlatformKey) {
+  const preset = platform ? PLATFORM_PRESETS[platform] : PLATFORM_PRESETS.instagram;
+  const result = await falRequest("fal-ai/flux-pro/v1.1", {
+    prompt,
+    image_size: { width: preset.width, height: preset.height },
+  });
+  return result.images?.[0]?.url as string;
+}
+
+export async function generateVideo(prompt: string, platform?: PlatformKey) {
+  const preset = platform ? PLATFORM_PRESETS[platform] : PLATFORM_PRESETS.tiktok;
+  const result = await falRequest("fal-ai/kling-video/v2.1/standard/text-to-video", {
+    prompt,
+    aspect_ratio: preset.aspect,
+    duration: "5",
+  });
+  return result.video?.url as string;
+}
+
+export async function generateMusic(prompt: string) {
+  const result = await falRequest("fal-ai/elevenlabs/music", {
+    prompt,
+    duration_seconds: 30,
+  });
+  return result.audio?.url as string;
+}
+import axios from "axios";
+
+const FEDAPAY_SECRET_KEY = process.env.FEDAPAY_SECRET_KEY;
+const FEDAPAY_BASE_URL =
+  process.env.FEDAPAY_ENV === "live"
+    ? "https://api.fedapay.com/v1"
+    : "https://sandbox-api.fedapay.com/v1";
+
+const client = axios.create({
+  baseURL: FEDAPAY_BASE_URL,
+  headers: {
+    Authorization: `Bearer ${FEDAPAY_SECRET_KEY}`,
+    "Content-Type": "application/json",
+  },
+});
+
+export async function createFedaPayTransaction(params: {
+  amountXof: number;
+  description: string;
+  customerEmail: string;
+  callbackUrl: string;
+}) {
+  const { amountXof, description, customerEmail, callbackUrl } = params;
+
+  const { data } = await client.post("/transactions", {
+    description,
+    amount: amountXof,
+    currency: { iso: "XOF" },
+    callback_url: callbackUrl,
+    customer: { email: customerEmail },
+  });
+
+  const transactionId = data.transaction.id;
+
+  const tokenRes = await client.post(`/transactions/${transactionId}/token`);
+  const paymentUrl = tokenRes.data.token.url as string;
+
+  return { transactionId, paymentUrl };
+}
+
+export async function verifyFedaPayTransaction(transactionId: string) {
+  const { data } = await client.get(`/transactions/${transactionId}`);
+  return data.transaction as { id: number; status: string; amount: number };
+}
+import { NextAuthOptions } from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
+import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import bcrypt from "bcryptjs";
+import { prisma } from "./prisma";
+
+export const authOptions: NextAuthOptions = {
+  adapter: PrismaAdapter(prisma),
+  session: { strategy: "jwt" },
+  pages: { signIn: "/login" },
+  providers: [
+    CredentialsProvider({
+      name: "Email",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Mot de passe", type: "password" },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) return null;
+
+        const user = await prisma.user.findUnique({ where: { email: credentials.email } });
+        if (!user?.passwordHash) return null;
+
+        const valid = await bcrypt.compare(credentials.password, user.passwordHash);
+        if (!valid) return null;
+
+        return { id: user.id, email: user.email, name: user.name };
+      },
+    }),
+  ],
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) token.userId = (user as { id: string }).id;
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) (session.user as { id?: string }).id = token.userId as string;
+      return session;
+    },
+  },
+};
+import NextAuth from "next-auth";
+import { authOptions } from "@/lib/auth";
+
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };
+import { NextRequest, NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
+import { z } from "zod";
+import { prisma } from "@/lib/prisma";
+
+const bodySchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8, "8 caractères minimum"),
+  name: z.string().min(1).optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const parsed = bodySchema.safeParse(await req.json());
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Requête invalide" },
+      { status: 400 }
+    );
+  }
+  const { email, password, name } = parsed.data;
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) {
+    return NextResponse.json({ error: "Un compte existe déjà avec cet email" }, { status: 409 });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  const user = await prisma.user.create({
+    data: { email, passwordHash, name, credits: 10 },
+  });
+
+  return NextResponse.json({ id: user.id, email: user.email });
+}
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+export async function GET() {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as { id?: string } | undefined)?.id;
+  if (!userId) return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { id: true, email: true, name: true, credits: true },
+  });
+
+  return NextResponse.json({ user });
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { z } from "zod";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import {
+  CREDIT_COSTS,
+  debitCreditsForGeneration,
+  refundCreditsForFailedGeneration,
+  InsufficientCreditsError,
+} from "@/lib/credits";
+import { generateImage, generateVideo, generateMusic } from "@/lib/fal";
+
+const bodySchema = z.object({
+  type: z.enum(["image", "video", "music"]),
+  model: z.string(),
+  prompt: z.string().min(3).max(2000),
+  platform: z.enum(["tiktok", "youtube", "instagram", "pinterest"]).optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as { id?: string } | undefined)?.id;
+  if (!userId) {
+    return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+  }
+
+  const parsed = bodySchema.safeParse(await req.json());
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Requête invalide", details: parsed.error.flatten() }, { status: 400 });
+  }
+  const { type, model, prompt, platform } = parsed.data;
+
+  const costTable = CREDIT_COSTS[type] as Record<string, number>;
+  const cost = costTable[model];
+  if (cost === undefined) {
+    return NextResponse.json({ error: "Modèle inconnu pour ce type" }, { status: 400 });
+  }
+
+  let generation;
+  try {
+    generation = await debitCreditsForGeneration({ userId, type, modelUsed: model, prompt, platform, cost });
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return NextResponse.json({ error: "Crédits insuffisants" }, { status: 402 });
+    }
+    throw err;
+  }
+
+  try {
+    await prisma.generation.update({ where: { id: generation.id }, data: { status: "processing" } });
+
+    let resultUrl: string | undefined;
+    if (type === "image") resultUrl = await generateImage(prompt, platform);
+    else if (type === "video") resultUrl = await generateVideo(prompt, platform);
+    else resultUrl = await generateMusic(prompt);
+
+    const updated = await prisma.generation.update({
+      where: { id: generation.id },
+      data: { status: "completed", resultUrl, completedAt: new Date() },
+    });
+
+    return NextResponse.json({ generation: updated });
+  } catch (err) {
+    await refundCreditsForFailedGeneration(generation.id);
+    const message = err instanceof Error ? err.message : "Erreur inconnue";
+    await prisma.generation.update({ where: { id: generation.id }, data: { errorMessage: message } });
+    return NextResponse.json({ error: "La génération a échoué, crédits remboursés" }, { status: 502 });
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { z } from "zod";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { CREDIT_PACKS } from "@/lib/credits";
+import { createFedaPayTransaction } from "@/lib/fedapay";
+
+const bodySchema = z.object({ packId: z.string() });
+
+export async function POST(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as { id?: string } | undefined)?.id;
+  if (!userId) return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+
+  const parsed = bodySchema.safeParse(await req.json());
+  if (!parsed.success) return NextResponse.json({ error: "Requête invalide" }, { status: 400 });
+
+  const pack = CREDIT_PACKS.find((p) => p.id === parsed.data.packId);
+  if (!pack) return NextResponse.json({ error: "Pack inconnu" }, { status: 400 });
+
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+
+  const { transactionId, paymentUrl } = await createFedaPayTransaction({
+    amountXof: pack.priceXof,
+    description: `Achat de ${pack.credits} crédits — ${pack.label}`,
+    customerEmail: user.email,
+    callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=pending`,
+  });
+
+  await prisma.payment.create({
+    data: {
+      userId,
+      fedapayTransactionId: String(transactionId),
+      amountXof: pack.priceXof,
+      creditsGranted: pack.credits,
+      status: "pending",
+    },
+  });
+
+  return NextResponse.json({ paymentUrl });
+}import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
+import { prisma } from "@/lib/prisma";
+import { verifyFedaPayTransaction } from "@/lib/fedapay";
+import { creditAfterPayment } from "@/lib/credits";
+
+const WEBHOOK_SECRET = process.env.FEDAPAY_WEBHOOK_SECRET;
+
+function isValidSignature(rawBody: string, signatureHeader: string | null): boolean {
+  if (!WEBHOOK_SECRET || !signatureHeader) return false;
+  const expected = crypto.createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signatureHeader));
+  } catch {
+    return false;
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const rawBody = await req.text();
+  const signature = req.headers.get("x-fedapay-signature");
+
+  if (!isValidSignature(rawBody, signature)) {
+    return NextResponse.json({ error: "Signature invalide" }, { status: 401 });
+  }
+
+  const event = JSON.parse(rawBody);
+  const transactionId = String(event?.entity?.id ?? event?.data?.id ?? "");
+  if (!transactionId) return NextResponse.json({ error: "Payload invalide" }, { status: 400 });
+
+  const transaction = await verifyFedaPayTransaction(transactionId);
+
+  const payment = await prisma.payment.findUnique({ where: { fedapayTransactionId: transactionId } });
+  if (!payment) return NextResponse.json({ error: "Paiement inconnu" }, { status: 404 });
+
+  if (payment.status === "approved") {
+    return NextResponse.json({ ok: true });
+  }
+
+  if (transaction.status === "approved") {
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: "approved" } });
+    await creditAfterPayment({
+      userId: payment.userId,
+      credits: payment.creditsGranted,
+      fedapayTransactionId: transactionId,
+    });
+  } else if (["declined", "canceled"].includes(transaction.status)) {
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: transaction.status } });
+  }
+
+  return NextResponse.json({ ok: true });
+}
+}
+}
+import type { Metadata } from "next";
+import "./globals.css";
+import Providers from "./providers";
+
+export const metadata: Metadata = {
+  title: "RUSHES — Génération de contenu par prompt",
+  description: "Vidéos, images et musiques prêtes pour TikTok, YouTube, Instagram et Pinterest — à partir d'un simple prompt.",
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="fr">
+      <body className="font-body min-h-screen">
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );"use client";
+
+import { SessionProvider } from "next-auth/react";
+
+export default function Providers({ children }: { children: React.ReactNode }) {
+  return <SessionProvider>{children}</SessionProvider>;
+}
+import Link from "next/link";
+
+const FORMATS = [
+  { name: "TikTok", ratio: "9:16", note: "Vertical plein écran" },
+  { name: "Instagram", ratio: "9:16", note: "Reels & Stories" },
+  { name: "YouTube", ratio: "16:9", note: "Format large ou Shorts" },
+  { name: "Pinterest", ratio: "2:3", note: "Épingles verticales" },
+];
+
+const STEPS = [
+  { n: "01", title: "Décrivez", body: "Un prompt, une plateforme cible. Rien d'autre à configurer." },
+  { n: "02", title: "Générez", body: "Vidéo, image ou musique produite en quelques instants, au bon format." },
+  { n: "03", title: "Publiez", body: "Téléchargez et publiez directement, prêt pour votre feed." },
+];
+
+export default function LandingPage() {
+  return (
+    <main className="bg-studio-bg text-studio-paper">
+      <header className="border-b border-studio-line">
+        <div className="mx-auto max-w-6xl px-6 py-5 flex items-center justify-between">
+          <span className="font-display text-xl tracking-tight">RUSHES</span>
+          <nav className="hidden sm:flex items-center gap-8 font-mono text-sm text-studio-paper/70">
+            <a href="#formats" className="hover:text-tally transition-colors">Formats</a>
+            <Link href="/pricing" className="hover:text-tally transition-colors">Tarifs</Link>
+            <Link
+              href="/dashboard"
+              className="border border-studio-paper/30 px-4 py-2 rounded-sm hover:border-tally hover:text-tally transition-colors"
+            >
+              Ouvrir le studio
+            </Link>
+          </nav>
+        </div>
+      </header>
+
+      <section className="mx-auto max-w-6xl px-6 pt-16 pb-20">
+        <div className="flex items-center gap-3 font-mono text-xs text-tally mb-6">
+          <span className="w-2 h-2 rounded-full bg-tally animate-pulse" />
+          SCÈNE 01 — PROMPT VERS CONTENU
+        </div>
+        <h1 className="font-display text-5xl sm:text-7xl leading-[1.05] max-w-3xl">
+          Vos rushes,
+          <br />
+          générés en un prompt.
+        </h1>
+        <p className="mt-6 max-w-xl text-studio-paper/70 text-lg">
+          Vidéos, images et musiques de qualité studio, prêtes au format exact de chaque
+          plateforme — TikTok, YouTube, Instagram, Pinterest.
+        </p>
+        <div className="mt-9 flex items-center gap-4">
+          <Link
+            href="/dashboard"
+            className="bg-tally text-studio-bg font-medium px-6 py-3 rounded-sm hover:bg-tally/90 transition-colors"
+          >
+            Commencer à générer
+          </Link>
+          <Link href="/pricing" className="font-mono text-sm text-studio-paper/70 hover:text-tally">
+            Voir les tarifs →
+          </Link>
+        </div>
+      </section>
+
+      <section id="formats" className="border-y border-studio-line bg-studio-panel">
+        <div className="mx-auto max-w-6xl px-6 py-14">
+          <p className="font-mono text-xs text-studio-paper/50 mb-8">FORMATS PRIS EN CHARGE</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-studio-line">
+            {FORMATS.map((f) => (
+              <div key={f.name} className="bg-studio-panel p-6">
+                <div
+                  className="border border-studio-paper/20 mx-auto mb-4"
+                  style={{
+                    width: f.ratio === "16:9" ? "72px" : f.ratio === "2:3" ? "48px" : "40px",
+                    height: f.ratio === "16:9" ? "40px" : f.ratio === "2:3" ? "72px" : "72px",
+                  }}
+                />
+                <p className="font-display text-lg">{f.name}</p>
+                <p className="font-mono text-xs text-studio-paper/50 mt-1">{f.ratio} · {f.note}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <div className="grid sm:grid-cols-3 gap-10">
+          {STEPS.map((s) => (
+            <div key={s.n}>
+              <p className="font-mono text-tally text-sm mb-3">{s.n}</p>
+              <h3 className="font-display text-2xl mb-2">{s.title}</h3>
+              <p className="text-studio-paper/60 text-sm leading-relaxed">{s.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <footer className="border-t border-studio-line">
+        <div className="mx-auto max-w-6xl px-6 py-8 font-mono text-xs text-studio-paper/40">
+          RUSHES — studio de génération de contenu
+        </div>
+      </footer>
+    </main>
+  );
+}"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { signIn } from "next-auth/react";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    const result = await signIn("credentials", { email, password, redirect: false });
+    setLoading(false);
+    if (result?.error) {
+      setError("Email ou mot de passe incorrect.");
+      return;
+    }
+    router.push("/dashboard");
+  }
+
+  return (
+    <main className="min-h-screen bg-studio-bg text-studio-paper flex items-center justify-center px-6">
+      <div className="w-full max-w-sm">
+        <span className="font-display text-xl block mb-8 text-center">RUSHES</span>
+        <h1 className="font-display text-2xl mb-6 text-center">Se connecter</h1>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="font-mono text-xs text-studio-paper/50 block mb-1.5">EMAIL</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-xs text-studio-paper/50 block mb-1.5">MOT DE PASSE</label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            />
+          </div>
+
+          {error && <p className="text-tally text-sm font-mono">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-tally text-studio-bg font-medium py-3 rounded-sm hover:bg-tally/90 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "Connexion..." : "Se connecter"}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-studio-paper/50 mt-6">
+          Pas encore de compte ?{" "}
+          <Link href="/register" className="text-tally hover:underline">
+            S'inscrire
+          </Link>
+        </p>
+      </div>
+    </main>
+  );"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { signIn } from "next-auth/react";
+
+export default function RegisterPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, name }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Inscription impossible.");
+        return;
+      }
+      const result = await signIn("credentials", { email, password, redirect: false });
+      if (result?.error) {
+        setError("Compte créé, mais la connexion automatique a échoué. Connectez-vous manuellement.");
+        return;
+      }
+      router.push("/dashboard");
+    } catch {
+      setError("Impossible de contacter le serveur.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-studio-bg text-studio-paper flex items-center justify-center px-6">
+      <div className="w-full max-w-sm">
+        <span className="font-display text-xl block mb-8 text-center">RUSHES</span>
+        <h1 className="font-display text-2xl mb-6 text-center">Créer un compte</h1>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="font-mono text-xs text-studio-paper/50 block mb-1.5">NOM</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-xs text-studio-paper/50 block mb-1.5">EMAIL</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-xs text-studio-paper/50 block mb-1.5">MOT DE PASSE</label>
+            <input
+              type="password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            />
+          </div>
+
+          {error && <p className="text-tally text-sm font-mono">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-tally text-studio-bg font-medium py-3 rounded-sm hover:bg-tally/90 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "Création..." : "Créer mon compte"}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-studio-paper/50 mt-6">
+          Déjà un compte ?{" "}
+          <Link href="/login" className="text-tally hover:underline">
+            Se connecter
+          </Link>
+        </p>
+      </div>
+    </main>
+  );"use client";
+
+import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+
+type GenType = "image" | "video" | "music";
+type Platform = "tiktok" | "youtube" | "instagram" | "pinterest";
+
+const MODELS: Record<GenType, { id: string; label: string; cost: number }[]> = {
+  image: [
+    { id: "flux-pro", label: "Flux Pro — photoréaliste", cost: 4 },
+    { id: "ideogram-v3", label: "Ideogram v3 — typographie & design", cost: 5 },
+  ],
+  video: [
+    { id: "kling-2.1", label: "Kling 2.1 — qualité/coût", cost: 25 },
+    { id: "runway-gen4", label: "Runway Gen-4 — haut de gamme", cost: 35 },
+  ],
+  music: [{ id: "elevenlabs-music", label: "ElevenLabs Music", cost: 10 }],
+};
+
+const PLATFORMS: { id: Platform; label: string }[] = [
+  { id: "tiktok", label: "TikTok" },
+  { id: "youtube", label: "YouTube" },
+  { id: "instagram", label: "Instagram" },
+  { id: "pinterest", label: "Pinterest" },
+];
+
+interface GenerationResult {
+  id: string;
+  status: string;
+  resultUrl?: string;
+  type: GenType;
+}
+
+export default function DashboardPage() {
+  const { status } = useSession();
+  const router = useRouter();
+  const [type, setType] = useState<GenType>("video");
+  const [platform, setPlatform] = useState<Platform>("tiktok");
+  const [model, setModel] = useState(MODELS.video[0].id);
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<GenerationResult[]>([]);
+  const [credits, setCredits] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (status === "unauthenticated") router.push("/login");
+  }, [status, router]);
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    fetch("/api/me")
+      .then((r) => r.json())
+      .then((d) => setCredits(d.user?.credits ?? null))
+      .catch(() => {});
+  }, [status]);
+
+  function selectType(t: GenType) {
+    setType(t);
+    setModel(MODELS[t][0].id);
+  }
+
+  async function handleGenerate() {
+    if (prompt.trim().length < 3) {
+      setError("Décrivez ce que vous voulez générer (3 caractères minimum).");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, model, prompt, platform }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Une erreur est survenue.");
+        return;
+      }
+      setResults((prev) => [data.generation, ...prev]);
+      setCredits((prev) => (prev !== null ? prev - selectedCost : prev));
+    } catch {
+      setError("Impossible de contacter le serveur.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const selectedCost = MODELS[type].find((m) => m.id === model)?.cost ?? 0;
+
+  return (
+    <main className="min-h-screen bg-studio-bg text-studio-paper">
+      <header className="border-b border-studio-line">
+        <div className="mx-auto max-w-5xl px-6 py-5 flex items-center justify-between">
+          <span className="font-display text-xl">RUSHES</span>
+          <div className="font-mono text-sm text-studio-paper/70">
+            {credits !== null ? `${credits} crédits` : "— crédits"}
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-5xl px-6 py-10 grid lg:grid-cols-[380px_1fr] gap-10">
+        <div className="space-y-6">
+          <div>
+            <p className="font-mono text-xs text-studio-paper/50 mb-2">TYPE DE CONTENU</p>
+            <div className="flex gap-2">
+              {(["video", "image", "music"] as GenType[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => selectType(t)}
+                  className={`flex-1 py-2.5 rounded-sm border font-mono text-sm capitalize transition-colors ${
+                    type === t
+                      ? "border-tally text-tally bg-tally/10"
+                      : "border-studio-line text-studio-paper/60 hover:border-studio-paper/40"
+                  }`}
+                >
+                  {t === "video" ? "Vidéo" : t === "image" ? "Image" : "Musique"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="font-mono text-xs text-studio-paper/50 mb-2">PLATEFORME CIBLE</p>
+            <div className="grid grid-cols-2 gap-2">
+              {PLATFORMS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setPlatform(p.id)}
+                  className={`py-2.5 rounded-sm border font-mono text-sm transition-colors ${
+                    platform === p.id
+                      ? "border-tally text-tally bg-tally/10"
+                      : "border-studio-line text-studio-paper/60 hover:border-studio-paper/40"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="font-mono text-xs text-studio-paper/50 mb-2">MODÈLE</p>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm"
+            >
+              {MODELS[type].map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} — {m.cost} crédits
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <p className="font-mono text-xs text-studio-paper/50 mb-2">PROMPT</p>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={5}
+              placeholder="Ex : Plan rapproché d'un café qui coule dans une tasse en céramique, lumière du matin, ambiance chaleureuse..."
+              className="w-full bg-studio-panel border border-studio-line rounded-sm px-3 py-2.5 text-sm resize-none placeholder:text-studio-paper/30"
+            />
+          </div>
+
+          {error && <p className="text-tally text-sm font-mono">{error}</p>}
+
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className="w-full bg-tally text-studio-bg font-medium py-3 rounded-sm hover:bg-tally/90 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "Génération en cours..." : `Générer — ${selectedCost} crédits`}
+          </button>
+        </div>
+
+        <div>
+          <p className="font-mono text-xs text-studio-paper/50 mb-4">RÉSULTATS</p>
+          {results.length === 0 ? (
+            <div className="border border-dashed border-studio-line rounded-sm h-64 flex items-center justify-center text-studio-paper/30 text-sm">
+              Vos générations apparaîtront ici
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 gap-4">
+              {results.map((r) => (
+                <div key={r.id} className="border border-studio-line rounded-sm p-3">
+                  <p className="font-mono text-xs text-studio-paper/50 mb-2">{r.status}</p>
+                  {r.resultUrl ? (
+                    r.type === "video" ? (
+                      <video src={r.resultUrl} controls className="w-full rounded-sm" />
+                    ) : r.type === "music" ? (
+                      <audio src={r.resultUrl} controls className="w-full" />
+                    ) : (
+                      <img src={r.resultUrl} alt="Résultat généré" className="w-full rounded-sm" />
+                    )
+                  ) : (
+                    <p className="text-studio-paper/40 text-sm">En attente...</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}"use client";
+
+import { useState } from "react";
+
+const PACKS = [
+  { id: "pack_s", credits: 50, priceXof: 4000, label: "Starter" },
+  { id: "pack_m", credits: 150, priceXof: 10000, label: "Creator" },
+  { id: "pack_l", credits: 400, priceXof: 25000, label: "Studio" },
+];
+
+export default function PricingPage() {
+  const [loadingPack, setLoadingPack] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function buy(packId: string) {
+    setLoadingPack(packId);
+    setError(null);
+    try {
+      const res = await fetch("/api/fedapay/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Erreur lors de la création du paiement.");
+        return;
+      }
+      window.location.href = data.paymentUrl;
+    } catch {
+      setError("Impossible de contacter le serveur.");
+    } finally {
+      setLoadingPack(null);
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-studio-bg text-studio-paper">
+      <div className="mx-auto max-w-4xl px-6 py-16">
+        <h1 className="font-display text-4xl mb-3">Packs de crédits</h1>
+        <p className="text-studio-paper/60 mb-10">
+          Paiement sécurisé via FedaPay. Les crédits sont ajoutés automatiquement après confirmation.
+        </p>
+
+        {error && <p className="text-tally text-sm font-mono mb-6">{error}</p>}
+
+        <div className="grid sm:grid-cols-3 gap-6">
+          {PACKS.map((p) => (
+            <div key={p.id} className="border border-studio-line rounded-sm p-6 flex flex-col">
+              <p className="font-mono text-xs text-studio-paper/50">{p.label.toUpperCase()}</p>
+              <p className="font-display text-3xl mt-3">{p.credits} crédits</p>
+              <p className="text-studio-paper/60 text-sm mt-1">{p.priceXof.toLocaleString("fr-FR")} FCFA</p>
+              <button
+                onClick={() => buy(p.id)}
+                disabled={loadingPack === p.id}
+                className="mt-6 bg-tally text-studio-bg font-medium py-2.5 rounded-sm hover:bg-tally/90 disabled:opacity-50 transition-colors"
+              >
+                {loadingPack === p.id ? "Redirection..." : "Acheter"}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </main>
+  );
+}
+}
+}
+}
